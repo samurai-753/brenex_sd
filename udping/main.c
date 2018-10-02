@@ -7,55 +7,15 @@
 #include <pthread.h>
 #include <unistd.h>
 
-static const char
-MESSAGE[] = "yiff me daddy";
+static char MESSAGE[] = "yiff me daddy UwU.";
 
 static const struct{
 	short family;
 	char port[2];
 	char addr[4];
 	char zero[8];
-} DESTINATION = 
+} DESTINATION =
 { AF_INET, {0x13, 0x8a},  {177, 105, 60, 80}, {0}};
-
-void
-*recive_pkg(void *ptr)
-{
-	printf("eu");
-	char *buff;
-	buff = malloc(4096);
-
-	if(buff == NULL) {
-		perror("malloc()");
-	}
-	memset(buff, 0, 4096);
-
-	struct {
-		short family;
-		char port[2];
-		char addr[4];
-		char zero[8];
-	} SOURCE;
-
-	int s;
-	s = socket(SOCK_DGRAM, AF_INET, 0);
-	if(s < 0) {
-		perror("socket()");
-	}
-
-	int len;
-	len = sizeof(SOURCE);
-	struct timeval *time_recived;
-	time_recived = (struct timeval*) ptr;
-	if(recvfrom(s, buff, 4096, 0, &SOURCE, &len) < 0)
-		perror("recvfrom()");
-	else
-		gettimeofday(time_recived, NULL);
-
-	free(buff);
-
-	return 0;
-}
 
 int
 main(int argc, char** argv)
@@ -73,6 +33,7 @@ main(int argc, char** argv)
 		return 1;
 	}
 
+	/* Initialize the socket */
 	int s;
 	s = socket(SOCK_DGRAM, AF_INET, 0);
 	if(s < 0) {
@@ -80,48 +41,80 @@ main(int argc, char** argv)
 		return 1;
 	}
 
+	/* Set the timeout */
+	struct timeval timeout;
+	timeout.tv_sec = 0;
+	timeout.tv_usec = 250000;
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*) &timeout, sizeof timeout);
+
 	struct timeval mean_rtt;
 	mean_rtt.tv_sec = 0;
 	mean_rtt.tv_usec = 0;
 	int pkg_lost;
 	pkg_lost = 0;
+
+	char *buff;
+	buff = malloc(4096);
+
+	if(buff == NULL) {
+		perror("malloc()");
+	}
+	memset(buff, 0, 4096);
+
+	struct {
+		short family;
+		char port[2];
+		char addr[4];
+		char zero[8];
+	} SOURCE;
+	unsigned int len;
+	len = sizeof(SOURCE);
+
 	for(int i = 0; i < c; i++) {
-		int count;
+		/* Sent the message */
 		struct timeval time_sent;
-		count = sendto(s, MESSAGE, strlen(MESSAGE), 0, &DESTINATION, sizeof(DESTINATION));
-		if(count < 0)
+		MESSAGE[17] = i % 93 + 33;
+		if(sendto(s, MESSAGE, strlen(MESSAGE), 0, &DESTINATION, sizeof(DESTINATION)) < 0)
 			perror("sendto()");
 		else
 			gettimeofday(&time_sent, NULL);
 
-
 		struct timeval time_recived;
-		time_recived.tv_sec = 0;
-		time_recived.tv_usec = 0;
-		pthread_t recive_thread;
-		if(pthread_create(&recive_thread, NULL, recive_pkg, (void*) &time_recived)) {
-			perror("pthread_create()");
-			return 1;
+		if(recvfrom(s, buff, 4096, 0, &SOURCE, &len) < 0) {
+			pkg_lost++;
+			printf("package lost\n");
+		} else {
+			gettimeofday(&time_recived, NULL);
+
+			/* Calculate the RTT */
+			struct timeval delta;
+			delta.tv_sec = time_recived.tv_sec - time_sent.tv_sec;
+			delta.tv_usec = time_recived.tv_usec - time_sent.tv_usec;
+
+			if(delta.tv_usec < 0) {
+				delta.tv_sec--;
+				delta.tv_usec += 1000000;
+			}
+
+			long int diff;
+			diff = delta.tv_sec * 1000 + delta.tv_usec / 1000;
+			printf("pkg #%3d\trtt: %ld ms\n", i, diff);
+
+			mean_rtt.tv_sec += delta.tv_sec;
+			mean_rtt.tv_usec += delta.tv_usec;
 		}
-
-		usleep(250000);
-		printf("a");
-		pthread_join(&recive_thread, 0);
-
-
-
-		struct timeval delta;
-		delta.tv_sec = time_recived.tv_sec - time_sent.tv_sec;
-		delta.tv_usec = time_recived.tv_usec - time_sent.tv_usec;
-		printf("RTT: %ld.%ld s\n", delta.tv_sec, delta.tv_usec);
-
-		mean_rtt.tv_sec += delta.tv_sec;
-		mean_rtt.tv_usec += delta.tv_usec;
 	}
 
-	mean_rtt.tv_sec /= 2 - pkg_lost;
-	mean_rtt.tv_usec /= 2 - pkg_lost;
-	printf("\nmean: %ld.%ld s\n", mean_rtt.tv_sec, mean_rtt.tv_usec);
+	mean_rtt.tv_sec /= c - pkg_lost;
+	mean_rtt.tv_usec /= c - pkg_lost;
+	long int total;
+	total = mean_rtt.tv_sec * 1000 + (mean_rtt.tv_usec / 1000);
+	printf("\nmean: %ld ms", total);
 
+	float result;
+	result = (float) pkg_lost / (float) c * 100;
+	printf("\tpackets lost: %3.2f (%2d)\n", result, pkg_lost);
+
+	free(buff);
 	return 0;
 }
